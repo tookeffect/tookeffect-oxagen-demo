@@ -348,7 +348,7 @@ candidate_safe = true</pre>
       document.getElementById("expectedBase").textContent = session.expectedBase;
       document.getElementById("mcpConfigTitle").textContent = "Connect Stella to this exact proof";
       document.getElementById("mcpConfigLead").textContent = "Use this temporary scoped bearer. It cannot select another repository or mutate GitHub, and it expires automatically.";
-      document.getElementById("mcpConfig").textContent = '[servers.tookeffect]\ntransport = "http"\nurl = "https://oxagen.tookeffect.com/mcp"\nheaders = { Authorization = "Bearer ' + githubGrant + '" }\ncandidate_safe = true';
+      document.getElementById("mcpConfig").textContent = ['[servers.tookeffect]', 'transport = "http"', 'url = "https://oxagen.tookeffect.com/mcp"', 'headers = { Authorization = "Bearer ' + githubGrant + '" }', 'candidate_safe = true'].join(String.fromCharCode(10));
       document.getElementById("grantNote").textContent = "Temporary grant expires " + formatTime(session.expiresAt) + ". Regenerate it through Try with your GitHub if needed. Stella's project trust boundary still applies.";
     }
 
