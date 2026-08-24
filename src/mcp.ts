@@ -2,7 +2,7 @@ import {
   verifyLiveOutcome,
   type DemoVerificationResult,
   type VerificationEnv,
-} from "./verification";
+} from "./verification.ts";
 
 const MCP_TOOL_NAME = "verify_github_pull_request_merge";
 const PREFERRED_PROTOCOL_VERSION = "2025-06-18";
