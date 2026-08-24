@@ -1,4 +1,6 @@
 import {
+  isPartnerGrant,
+  verifyGrantedOutcome,
   verifyLiveOutcome,
   type DemoVerificationResult,
   type VerificationEnv,
@@ -27,7 +29,7 @@ export type DemoRuntimeEnv = VerificationEnv & {
 export const MCP_TOOL = {
   name: MCP_TOOL_NAME,
   description:
-    "Independently verify the demo-scoped GitHub pull-request merge claim from authoritative provider state. The target is bound server-side. This tool is read-only and returns APPLIED, NOT_APPLIED, or AMBIGUOUS plus verified receipt evidence.",
+    "Independently verify a GitHub pull-request merge claim from authoritative provider state. In public-example mode the target is server-bound; with a TookEffect partner grant it is bound to the user's explicitly authorized repo and PR. This tool is read-only and returns APPLIED, NOT_APPLIED, or AMBIGUOUS plus verified Receipt evidence.",
   inputSchema: {
     type: "object",
     properties: {
@@ -42,7 +44,7 @@ export const MCP_TOOL = {
         minLength: 1,
         maxLength: 240,
         description:
-          "Optional Oxagen/Stella context or provenance reference. It is carried only as handoff context and never selects the provider target.",
+          "Optional Oxagen/Stella context or provenance reference. It never selects or replaces the authorized provider target.",
       },
     },
     required: ["claim"],
@@ -61,8 +63,9 @@ export function mcpPublicInfo() {
     endpoint: "/mcp",
     transport: "streamable-http",
     protocolVersion: PREFERRED_PROTOCOL_VERSION,
-    authentication: "demo-scoped-public",
-    targetBinding: "server-side",
+    authentication: "optional-scoped-bearer",
+    modes: ["public-example", "your-github"],
+    targetBinding: "server-side-or-grant-bound",
     readOnly: true,
     tool: MCP_TOOL_NAME,
     stellaToolName: `mcp__tookeffect__${MCP_TOOL_NAME}`,
@@ -91,7 +94,8 @@ export async function takeVerificationBudget(
 export async function handleMcpRequest(
   request: Request,
   env: DemoRuntimeEnv,
-  verify: typeof verifyLiveOutcome = verifyLiveOutcome,
+  verifyExample: typeof verifyLiveOutcome = verifyLiveOutcome,
+  verifyGranted: typeof verifyGrantedOutcome = verifyGrantedOutcome,
 ): Promise<Response> {
   if (request.method !== "POST") {
     return mcpJson(
@@ -129,6 +133,7 @@ export async function handleMcpRequest(
 
   const id = message.id ?? null;
   const params = isRecord(message.params) ? message.params : {};
+  const grant = bearerGrant(request);
 
   if (message.method === "notifications/initialized") {
     return new Response(null, {
@@ -148,11 +153,13 @@ export async function handleMcpRequest(
       serverInfo: {
         name: "tookeffect-oxagen-verifier",
         title: "TookEffect × Oxagen verifier",
-        version: "0.2.0",
+        version: "0.3.0",
         websiteUrl: "https://tookeffect.com",
       },
       instructions:
-        "Demo-scoped read-only verifier. Oxagen/Stella may supply a success claim; TookEffect independently checks the server-bound GitHub target and returns provider evidence without performing the claimed action.",
+        grant
+          ? "Read-only verifier bound by a temporary TookEffect partner grant to one explicitly authorized GitHub repo and PR. Caller arguments cannot change the target."
+          : "Public read-only example verifier. TookEffect independently checks the server-bound GitHub target and returns provider evidence without performing the claimed action.",
     }));
   }
 
@@ -178,14 +185,23 @@ export async function handleMcpRequest(
       if (!(await takeVerificationBudget(request, env, "mcp"))) {
         return mcpJson(rpcError(id, -32029, "demo_rate_limit_exceeded"));
       }
-      const observed = await verify(env);
+      if (grant && !isPartnerGrant(grant)) {
+        return mcpJson(rpcError(id, -32001, "partner_grant_invalid"));
+      }
+      const observed = grant
+        ? await verifyGranted(env, grant)
+        : await verifyExample(env);
       return mcpJson(rpcResult(id, toolResult(observed, claim, provenanceRef)));
     } catch (error) {
       console.error(JSON.stringify({
         event: "oxagen_mcp_verification_failed",
+        mode: grant ? "your-github" : "public-example",
         error: safeError(error),
       }));
-      return mcpJson(rpcError(id, -32000, "verification_unavailable"));
+      const message = error instanceof Error && error.message.startsWith("partner_verification_failed:401")
+        ? "partner_grant_expired_or_revoked"
+        : "verification_unavailable";
+      return mcpJson(rpcError(id, -32000, message));
     }
   }
 
@@ -204,8 +220,23 @@ function toolResult(
     "Control: OBSERVE_ONLY",
     "Provider mutation: no",
     "Signed Receipt: verified",
-    `Evidence digest: ${observed.receipt.evidenceDigest}`,
   ];
+  if (observed.partner) {
+    lines.splice(1, 0,
+      `Repository: ${observed.partner.repository}`,
+      `Pull request: #${observed.partner.pullNumber}`,
+      `Authoritative state: ${observed.partner.githubUrl}`,
+    );
+  }
+  if (observed.observation?.ok) {
+    lines.push(
+      `Observed merged: ${observed.observation.merged ? "true" : "false"}`,
+      `Observed head: ${observed.observation.headSha || "unknown"}`,
+      `Observed base: ${observed.observation.baseRef || "unknown"}`,
+      `Observed at: ${observed.observation.observedAt}`,
+    );
+  }
+  lines.push(`Evidence digest: ${observed.receipt.evidenceDigest}`);
   if (provenanceRef) lines.splice(1, 0, `Provenance ref: ${provenanceRef}`);
 
   return {
@@ -218,10 +249,18 @@ function toolResult(
       providerReadback: observed.providerReadback,
       controlMode: observed.controlMode,
       actionAttempted: observed.actionAttempted,
+      ...(observed.partner ? { partner: observed.partner } : {}),
+      ...(observed.observation ? { observation: observed.observation } : {}),
       receipt: observed.receipt,
     },
     isError: false,
   };
+}
+
+function bearerGrant(request: Request) {
+  const authorization = request.headers.get("authorization") || "";
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
+  return match?.[1]?.trim() || "";
 }
 
 function rpcResult(id: unknown, result: unknown): JsonRecord {
