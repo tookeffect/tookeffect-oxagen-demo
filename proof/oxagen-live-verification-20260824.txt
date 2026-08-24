@@ -1,0 +1,4 @@
+TookEffect × Oxagen standalone verification proof
+
+Purpose: harmless disposable pull request used only for live Observe-Only verification against this dedicated public demo repository.
+No production code, credentials, customer data, or provider configuration are included.
