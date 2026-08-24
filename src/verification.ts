@@ -265,7 +265,7 @@ export async function verifyReceiptSignature(
 
   const cryptoKey = await crypto.subtle.importKey(
     "jwk",
-    key as JsonWebKey,
+    key as unknown as JsonWebKey,
     { name: "Ed25519" },
     false,
     ["verify"],
@@ -274,8 +274,8 @@ export async function verifyReceiptSignature(
   return crypto.subtle.verify(
     "Ed25519",
     cryptoKey,
-    base64UrlBytes(signaturePart),
-    new TextEncoder().encode(`${protectedPart}.${payloadPart}`),
+    ownedArrayBuffer(base64UrlBytes(signaturePart)),
+    ownedArrayBuffer(new TextEncoder().encode(`${protectedPart}.${payloadPart}`)),
   );
 }
 
@@ -356,4 +356,10 @@ function base64UrlBytes(value: string): Uint8Array {
   const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
   const binary = atob(padded);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function ownedArrayBuffer(value: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(value.byteLength);
+  copy.set(value);
+  return copy.buffer;
 }
