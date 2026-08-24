@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">TookEffect</title>
+  <rect width="512" height="512" rx="64" fill="#09100b"/>
+  <path d="M74 104h314l-39 47H242v214l-51 48V151H35z" fill="#8bd36f"/>
+  <path d="M278 210h112l-38 46h-75v48h117l-40 48H226V251z" fill="#8bd36f"/>
+  <path d="m180 246 35-36 38 40 91-102h67L254 325z" fill="#e65a25"/>
+</svg>

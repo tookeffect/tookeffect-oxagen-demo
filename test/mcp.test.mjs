@@ -39,6 +39,33 @@ const observed = {
   },
 };
 
+const grantedObserved = {
+  ...observed,
+  partner: {
+    mode: "your-github",
+    provider: "github",
+    repository: "mac/demo",
+    pullNumber: 12,
+    expectedHeadSha: "c".repeat(40),
+    expectedBase: "main",
+    githubUrl: "https://github.com/mac/demo/pull/12",
+    expiresAt: "2030-01-01T00:00:00.000Z",
+    stellaAgent: "Stella · Oxagen demo",
+  },
+  observation: {
+    ok: true,
+    merged: false,
+    commitOnBase: false,
+    headSha: "c".repeat(40),
+    baseRef: "main",
+    exactHead: true,
+    exactBase: true,
+    observedAt: "2026-08-24T16:00:00.000Z",
+  },
+};
+
+const partnerGrant = "oxg1.abcdefghijklmnopqrstuv.abcdefghijklmnopqrstuvwxyz0123456789_-";
+
 function mcpRequest(method, params = {}, id = 1, headers = {}) {
   return new Request("https://oxagen.tookeffect.com/mcp", {
     method: "POST",
@@ -52,6 +79,7 @@ test("public MCP metadata exposes the Stella wire name but no target binding", (
   assert.equal(info.enabled, true);
   assert.equal(info.readOnly, true);
   assert.equal(info.transport, "streamable-http");
+  assert.equal(info.authentication, "optional-scoped-bearer");
   assert.equal(info.stellaToolName, "mcp__tookeffect__verify_github_pull_request_merge");
   const serialized = JSON.stringify(info);
   for (const hidden of [env.VERIFICATION_TARGET_ID, env.VERIFICATION_REPO, env.VERIFICATION_EXPECTED_HEAD_SHA]) {
@@ -84,8 +112,9 @@ test("Stella-compatible initialize and tools/list handshake succeeds", async () 
   assert.equal(listBody.result.tools[0].name, MCP_TOOL.name);
 });
 
-test("tools/call returns provider-backed Observe-Only proof", async () => {
-  let calls = 0;
+test("public tools/call returns provider-backed Observe-Only proof", async () => {
+  let publicCalls = 0;
+  let grantedCalls = 0;
   const response = await handleMcpRequest(mcpRequest("tools/call", {
     name: MCP_TOOL.name,
     arguments: {
@@ -93,12 +122,16 @@ test("tools/call returns provider-backed Observe-Only proof", async () => {
       provenance_ref: "oxagen://workspace/context/example",
     },
   }), env, async () => {
-    calls += 1;
+    publicCalls += 1;
     return observed;
+  }, async () => {
+    grantedCalls += 1;
+    return grantedObserved;
   });
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(calls, 1);
+  assert.equal(publicCalls, 1);
+  assert.equal(grantedCalls, 0);
   assert.equal(body.result.isError, false);
   assert.equal(body.result.structuredContent.verdict, "NOT_APPLIED");
   assert.equal(body.result.structuredContent.controlMode, "OBSERVE_ONLY");
@@ -106,7 +139,51 @@ test("tools/call returns provider-backed Observe-Only proof", async () => {
   assert.match(body.result.content[0].text, /Signed Receipt: verified/);
 });
 
-test("rate limit rejects before the verifier is called", async () => {
+test("bearer grant routes Stella to the authorized user GitHub verifier", async () => {
+  let publicCalls = 0;
+  let grantedCalls = 0;
+  let receivedGrant = "";
+  const response = await handleMcpRequest(mcpRequest("tools/call", {
+    name: MCP_TOOL.name,
+    arguments: { claim: "The requested change was merged." },
+  }, 9, { authorization: `Bearer ${partnerGrant}` }), env, async () => {
+    publicCalls += 1;
+    return observed;
+  }, async (_env, grant) => {
+    grantedCalls += 1;
+    receivedGrant = grant;
+    return grantedObserved;
+  });
+  const body = await response.json();
+  assert.equal(publicCalls, 0);
+  assert.equal(grantedCalls, 1);
+  assert.equal(receivedGrant, partnerGrant);
+  assert.equal(body.result.structuredContent.partner.repository, "mac/demo");
+  assert.equal(body.result.structuredContent.observation.merged, false);
+  assert.match(body.result.content[0].text, /Authoritative state: https:\/\/github.com\/mac\/demo\/pull\/12/);
+  assert.equal(JSON.stringify(body).includes(partnerGrant), false);
+});
+
+test("invalid bearer never falls back to the public fixture", async () => {
+  let publicCalls = 0;
+  let grantedCalls = 0;
+  const response = await handleMcpRequest(mcpRequest("tools/call", {
+    name: MCP_TOOL.name,
+    arguments: { claim: "Done." },
+  }, 1, { authorization: "Bearer definitely-not-a-grant" }), env, async () => {
+    publicCalls += 1;
+    return observed;
+  }, async () => {
+    grantedCalls += 1;
+    return grantedObserved;
+  });
+  const body = await response.json();
+  assert.equal(publicCalls, 0);
+  assert.equal(grantedCalls, 0);
+  assert.equal(body.error.message, "partner_grant_invalid");
+});
+
+test("rate limit rejects before either verifier is called", async () => {
   let calls = 0;
   const limitedEnv = { ...env, VERIFY_GLOBAL_RATE_LIMITER: limiter(false) };
   const response = await handleMcpRequest(mcpRequest("tools/call", {
@@ -115,6 +192,9 @@ test("rate limit rejects before the verifier is called", async () => {
   }), limitedEnv, async () => {
     calls += 1;
     return observed;
+  }, async () => {
+    calls += 1;
+    return grantedObserved;
   });
   const body = await response.json();
   assert.equal(calls, 0);
