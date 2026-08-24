@@ -1,0 +1,18 @@
+{
+  "name": "@tookeffect/oxagen-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run --outdir=dist",
+    "check": "npm run test && npm run typecheck && npm run build",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "wrangler": "4.125.0"
+  }
+}
