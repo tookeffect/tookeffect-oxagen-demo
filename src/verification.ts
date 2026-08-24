@@ -1,14 +1,10 @@
 const CORE_VERIFY_PATH = "/api/v1/effects/github/verify-pull-request-merge";
-const CORE_PARTNER_SESSION_PATH = "/api/v1/partner/oxagen/session";
-const CORE_PARTNER_VERIFY_PATH = "/api/v1/partner/oxagen/verify";
 const CORE_KEYS_PATH = "/api/v1/receipt-keys";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HEX_SHA = /^[0-9a-f]{40,64}$/i;
-const HEX_HEAD_SHA = /^[0-9a-f]{40}$/i;
 const HEX_DIGEST = /^[0-9a-f]{64}$/i;
 const COMPACT_JWS = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const SAFE_SLUG = /^[A-Za-z0-9_.-]{1,160}$/;
-const PARTNER_GRANT = /^oxg1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 export type VerificationEnv = {
   CORE_BASE_URL: string;
@@ -32,34 +28,6 @@ export type DemoInfo = {
   agentClaim: string;
 };
 
-export type PartnerSessionSummary = {
-  active: true;
-  mode: "your-github";
-  provider: "github";
-  repository: string;
-  pullNumber: number;
-  expectedHeadSha: string;
-  expectedBase: string;
-  githubUrl: string;
-  expiresAt: string;
-  stellaAgent: string;
-};
-
-export type SafeGithubObservation = {
-  ok: boolean;
-  merged?: boolean;
-  commitOnBase?: boolean;
-  headSha?: string;
-  baseRef?: string;
-  baseHeadSha?: string;
-  mergeCommitSha?: string;
-  compareStatus?: string;
-  exactHead?: boolean;
-  exactBase?: boolean;
-  observedAt: string;
-  reason?: string;
-};
-
 export type DemoVerificationResult = {
   status: "completed";
   verdict: "APPLIED" | "NOT_APPLIED" | "AMBIGUOUS";
@@ -73,8 +41,6 @@ export type DemoVerificationResult = {
     mode: string;
     keyId: string;
   };
-  partner?: Omit<PartnerSessionSummary, "active">;
-  observation?: SafeGithubObservation;
 };
 
 type Binding = {
@@ -102,8 +68,6 @@ type RawCoreResult = {
   actionAttempted: false;
   controlMode: "OBSERVE_ONLY";
   receipt: RawReceipt;
-  evidence?: JsonRecord;
-  partner?: Omit<PartnerSessionSummary, "active">;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -157,32 +121,6 @@ export function demoIdempotencyKey(now = Date.now()): string {
   return `oxagen-partner-demo-${Math.floor(now / 3_600_000)}`;
 }
 
-export function isPartnerGrant(value: string): boolean {
-  const grant = clean(value);
-  return grant.length <= 8192 && PARTNER_GRANT.test(grant);
-}
-
-export async function inspectPartnerGrant(
-  env: VerificationEnv,
-  grant: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<PartnerSessionSummary> {
-  if (!isPartnerGrant(grant)) throw new Error("partner_grant_invalid");
-  const coreOrigin = strictHttpsOrigin(env.CORE_BASE_URL);
-  const response = await fetchImpl(`${coreOrigin}${CORE_PARTNER_SESSION_PATH}`, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      authorization: `Bearer ${grant}`,
-    },
-    cache: "no-store",
-    redirect: "manual",
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) throw new Error(`partner_session_failed:${response.status}`);
-  return validatePartnerSession(await readBoundedJson(response, 64 * 1024));
-}
-
 export async function verifyLiveOutcome(
   env: VerificationEnv,
   options: {
@@ -223,47 +161,21 @@ export async function verifyLiveOutcome(
     const raw = validateCoreResult(await readBoundedJson(response, 512 * 1024));
     const signatureVerified = await verifyReceiptSignature(raw, coreOrigin, fetchImpl);
     if (!signatureVerified) throw new Error("receipt_signature_invalid");
-    return publicVerificationResult(raw);
-  } catch (error) {
-    if (controller.signal.aborted) throw new Error("core_verification_timeout");
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
-export async function verifyGrantedOutcome(
-  env: VerificationEnv,
-  grant: string,
-  options: { fetchImpl?: typeof fetch; requestId?: string } = {},
-): Promise<DemoVerificationResult> {
-  if (!isPartnerGrant(grant)) throw new Error("partner_grant_invalid");
-  const coreOrigin = strictHttpsOrigin(env.CORE_BASE_URL);
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const requestId = options.requestId || crypto.randomUUID();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
-  try {
-    const response = await fetchImpl(`${coreOrigin}${CORE_PARTNER_VERIFY_PATH}`, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${grant}`,
-        "content-type": "application/json",
-        "idempotency-key": `oxagen-user-${crypto.randomUUID()}`,
-        "x-tookeffect-request-id": requestId,
+    return {
+      status: "completed",
+      verdict: raw.verdict,
+      controlMode: "OBSERVE_ONLY",
+      actionAttempted: false,
+      providerReadback: "live",
+      receipt: {
+        issued: true,
+        signatureVerified: true,
+        evidenceDigest: raw.receipt.evidenceDigest.toLowerCase(),
+        mode: raw.receipt.mode,
+        keyId: raw.receipt.keyId,
       },
-      body: "{}",
-      cache: "no-store",
-      redirect: "manual",
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`partner_verification_failed:${response.status}`);
-    const raw = validateCoreResult(await readBoundedJson(response, 512 * 1024), true);
-    const signatureVerified = await verifyReceiptSignature(raw, coreOrigin, fetchImpl);
-    if (!signatureVerified) throw new Error("receipt_signature_invalid");
-    if (!raw.partner) throw new Error("partner_summary_missing");
-    return publicVerificationResult(raw);
+    };
   } catch (error) {
     if (controller.signal.aborted) throw new Error("core_verification_timeout");
     throw error;
@@ -272,14 +184,7 @@ export async function verifyGrantedOutcome(
   }
 }
 
-export function validatePartnerSession(value: unknown): PartnerSessionSummary {
-  const record = asRecord(value);
-  const summary = validatePartnerSummary(record);
-  if (record.active !== true) throw new Error("partner_session_contract_mismatch");
-  return { active: true, ...summary };
-}
-
-export function validateCoreResult(value: unknown, requirePartner = false): RawCoreResult {
+export function validateCoreResult(value: unknown): RawCoreResult {
   const record = asRecord(value);
   const receipt = asRecord(record.receipt);
   const verdict = record.verdict;
@@ -299,8 +204,6 @@ export function validateCoreResult(value: unknown, requirePartner = false): RawC
     throw new Error("core_verification_contract_mismatch");
   }
 
-  const partner = record.partner === undefined ? undefined : validatePartnerSummary(asRecord(record.partner));
-  if (requirePartner && !partner) throw new Error("partner_summary_missing");
   return {
     effectId: clean(record.effectId),
     status: "completed",
@@ -315,108 +218,6 @@ export function validateCoreResult(value: unknown, requirePartner = false): RawC
       keyId: clean(receipt.keyId),
       jwksUrl: clean(receipt.jwksUrl),
     },
-    ...(record.evidence && typeof record.evidence === "object" && !Array.isArray(record.evidence)
-      ? { evidence: record.evidence as JsonRecord }
-      : {}),
-    ...(partner ? { partner } : {}),
-  };
-}
-
-function publicVerificationResult(raw: RawCoreResult): DemoVerificationResult {
-  const observation = safeObservation(raw.evidence);
-  return {
-    status: "completed",
-    verdict: raw.verdict,
-    controlMode: "OBSERVE_ONLY",
-    actionAttempted: false,
-    providerReadback: "live",
-    receipt: {
-      issued: true,
-      signatureVerified: true,
-      evidenceDigest: raw.receipt.evidenceDigest.toLowerCase(),
-      mode: raw.receipt.mode,
-      keyId: raw.receipt.keyId,
-    },
-    ...(raw.partner ? { partner: raw.partner } : {}),
-    ...(observation ? { observation } : {}),
-  };
-}
-
-function validatePartnerSummary(record: JsonRecord): Omit<PartnerSessionSummary, "active"> {
-  const repository = clean(record.repository);
-  const pullNumber = Number(record.pullNumber);
-  const expectedHeadSha = clean(record.expectedHeadSha).toLowerCase();
-  const expectedBase = clean(record.expectedBase);
-  const githubUrl = clean(record.githubUrl);
-  const expiresAt = clean(record.expiresAt);
-  const stellaAgent = clean(record.stellaAgent);
-  if (
-    record.mode !== "your-github"
-    || record.provider !== "github"
-    || !/^[^/\s]+\/[^/\s]+$/.test(repository)
-    || repository.length > 321
-    || !Number.isSafeInteger(pullNumber)
-    || pullNumber < 1
-    || !HEX_HEAD_SHA.test(expectedHeadSha)
-    || !expectedBase
-    || expectedBase.length > 255
-    || !isExpectedGithubPullUrl(githubUrl, repository, pullNumber)
-    || !validFutureIso(expiresAt)
-    || stellaAgent !== "Stella · Oxagen demo"
-  ) {
-    throw new Error("partner_summary_contract_mismatch");
-  }
-  return {
-    mode: "your-github",
-    provider: "github",
-    repository,
-    pullNumber,
-    expectedHeadSha,
-    expectedBase,
-    githubUrl,
-    expiresAt,
-    stellaAgent,
-  };
-}
-
-function safeObservation(evidence: JsonRecord | undefined): SafeGithubObservation | undefined {
-  if (!evidence) return undefined;
-  const observation = asRecord(evidence.observation);
-  const observedAt = clean(observation.observedAt);
-  if (!validIso(observedAt) || typeof observation.ok !== "boolean") return undefined;
-  if (observation.ok === false) {
-    const reason = clean(observation.reason);
-    return { ok: false, observedAt, ...(reason ? { reason: reason.slice(0, 200) } : {}) };
-  }
-
-  const headSha = clean(observation.headSha).toLowerCase();
-  const baseRef = clean(observation.baseRef);
-  const baseHeadSha = clean(observation.baseHeadSha).toLowerCase();
-  const mergeCommitSha = clean(observation.mergeCommitSha).toLowerCase();
-  if (
-    typeof observation.merged !== "boolean"
-    || typeof observation.commitOnBase !== "boolean"
-    || typeof observation.exactHead !== "boolean"
-    || typeof observation.exactBase !== "boolean"
-    || !HEX_HEAD_SHA.test(headSha)
-    || !baseRef
-    || baseRef.length > 255
-    || (baseHeadSha && !HEX_HEAD_SHA.test(baseHeadSha))
-    || (mergeCommitSha && !HEX_HEAD_SHA.test(mergeCommitSha))
-  ) return undefined;
-
-  return {
-    ok: true,
-    merged: observation.merged,
-    commitOnBase: observation.commitOnBase,
-    headSha,
-    baseRef,
-    ...(baseHeadSha ? { baseHeadSha } : {}),
-    ...(mergeCommitSha ? { mergeCommitSha } : {}),
-    compareStatus: clean(observation.compareStatus).slice(0, 40),
-    exactHead: observation.exactHead,
-    exactBase: observation.exactBase,
-    observedAt,
   };
 }
 
@@ -528,17 +329,6 @@ function strictHttpsOrigin(value: string): string {
   return url.origin;
 }
 
-function isExpectedGithubPullUrl(value: string, repository: string, pullNumber: number) {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:"
-      && url.hostname === "github.com"
-      && url.pathname === `/${repository}/pull/${pullNumber}`;
-  } catch {
-    return false;
-  }
-}
-
 function isHttpsUrl(value: unknown): boolean {
   try {
     const url = new URL(clean(value));
@@ -546,15 +336,6 @@ function isHttpsUrl(value: unknown): boolean {
   } catch {
     return false;
   }
-}
-
-function validFutureIso(value: string) {
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) && parsed > Date.now() - 60_000;
-}
-
-function validIso(value: string) {
-  return Boolean(value) && Number.isFinite(Date.parse(value));
 }
 
 function asRecord(value: unknown): JsonRecord {
