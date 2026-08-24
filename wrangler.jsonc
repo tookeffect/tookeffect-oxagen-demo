@@ -9,6 +9,24 @@
   "vars": {
     "CORE_BASE_URL": "https://tookeffect.com"
   },
+  "ratelimits": [
+    {
+      "name": "VERIFY_ACTOR_RATE_LIMITER",
+      "namespace_id": "8242401",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    },
+    {
+      "name": "VERIFY_GLOBAL_RATE_LIMITER",
+      "namespace_id": "8242402",
+      "simple": {
+        "limit": 30,
+        "period": 60
+      }
+    }
+  ],
   "routes": [
     {
       "pattern": "oxagen.tookeffect.com",
