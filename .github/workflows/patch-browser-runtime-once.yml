@@ -1,0 +1,42 @@
+name: Patch browser runtime once
+
+on:
+  push:
+    branches:
+      - feat/browser-runtime-fix
+    paths:
+      - .github/workflows/patch-browser-runtime-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/browser-runtime-fix
+      - name: Replace invalid generated MCP config string
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/app.ts')
+          lines = p.read_text().splitlines()
+          needle = 'document.getElementById("mcpConfig").textContent ='
+          replacement = '''      document.getElementById("mcpConfig").textContent = ['[servers.tookeffect]', 'transport = "http"', 'url = "https://oxagen.tookeffect.com/mcp"', 'headers = { Authorization = "Bearer ' + githubGrant + '" }', 'candidate_safe = true'].join(String.fromCharCode(10));'''
+          matches = [i for i, line in enumerate(lines) if needle in line]
+          if len(matches) != 1:
+              raise SystemExit(f'expected one MCP config line, found {len(matches)}')
+          lines[matches[0]] = replacement
+          p.write_text('\n'.join(lines) + '\n')
+          PY
+      - name: Commit patch
+        run: |
+          set -euo pipefail
+          git config user.name 'gabrielsalera'
+          git config user.email '75205939+gabrielsalera@users.noreply.github.com'
+          git add src/app.ts
+          git diff --cached --check
+          git commit -m 'Fix browser runtime MCP config rendering'
+          git push origin HEAD:feat/browser-runtime-fix
