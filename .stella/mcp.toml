@@ -1,0 +1,4 @@
+[servers.tookeffect]
+transport = "http"
+url = "https://oxagen.tookeffect.com/mcp"
+candidate_safe = true
